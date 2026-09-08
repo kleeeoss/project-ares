@@ -295,7 +295,7 @@ python rag_pipeline.py
     
       
     
-- [ ] **Phase 2: Kubernetes (K8s) Orchestration:** Translating manifests to K8s Deployments, StatefulSets for storage, and HPA autoscaling.
+- [x] **Phase 2: Kubernetes (K8s) Orchestration:** Translating manifests to K8s Deployments, StatefulSets for storage, and HPA autoscaling.
     
       
     
