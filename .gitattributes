@@ -1,0 +1,11 @@
+# Auto-detect text files and enforce LF line endings
+* text=auto eol=lf
+
+# Explicit configurations for containers and configs
+Dockerfile* text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.sh text eol=lf

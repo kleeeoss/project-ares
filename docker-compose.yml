@@ -1,36 +1,44 @@
 services:
   coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.coordinator
+    image: ares-coordinator:latest
     container_name: ares_coordinator
-    build: .
-    command: ["uvicorn", "coordinator:app", "--host", "0.0.0.0", "--port", "9000"]
     ports:
       - "9000:9000"
-    depends_on:
-      - compute_1
-      - compute_2
+    environment:
+      - COMPUTE_NODES=["http://compute_1:8000","http://compute_2:8000"]
+    env_file:
+      - .env
+    networks:
+      - ares_cluster
 
   compute_1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ares-compute:latest
     container_name: ares_compute_01
-    build: .
-    command: ["uvicorn", "compute_node:app", "--host", "0.0.0.0", "--port", "8000"]
-    env_file:
-      - .env
     volumes:
       - ./data/node_1:/app/data
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-
-  compute_2:
-    container_name: ares_compute_02
-    build: .
-    command: ["uvicorn", "compute_node:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file:
       - .env
+    networks:
+      - ares_cluster
+
+  compute_2:
+    image: ares-compute:latest
+    container_name: ares_compute_02
     volumes:
       - ./data/node_2:/app/data
-    deploy:
-      resources:
-        limits:
-          memory: 2G
+    env_file:
+      - .env
+    networks:
+      - ares_cluster
+    depends_on:
+      - compute_1
+
+networks:
+  ares_cluster:
+    driver: bridge

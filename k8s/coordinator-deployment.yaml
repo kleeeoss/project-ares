@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ares-coordinator
+  namespace: ares
+  labels:
+    app: ares-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ares-coordinator
+  template:
+    metadata:
+      labels:
+        app: ares-coordinator
+    spec:
+      containers:
+        - name: coordinator-gateway
+          image: ares-coordinator:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "coordinator:app", "--host", "0.0.0.0", "--port", "9000"]
+          ports:
+            - containerPort: 9000
+          env:
+            - name: COMPUTE_NODES
+              value: '["http://compute-service:8000"]'
+          envFrom:
+            - secretRef:
+                name: ares-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 5

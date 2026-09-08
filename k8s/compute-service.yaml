@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: compute-service
+  namespace: ares
+spec:
+  type: ClusterIP
+  selector:
+    app: ares-compute
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
