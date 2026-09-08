@@ -4,13 +4,20 @@ import random
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
+import os
+import json
 
 app = FastAPI(title="Ares Coordinator Node", description="Distributed Scatter-Gather Router")
 
-COMPUTE_NODES = [
-    "http://compute_1:8000",
-    "http://compute_2:8000"
-]
+COMPUTE_NODES = default_nodes = ["http://compute_1:8000", "http://compute_2:8000"]
+nodes_env = os.getenv("COMPUTE_NODES")
+
+if nodes_env:
+    COMPUTE_NODES = json.loads(nodes_env)
+else:
+    COMPUTE_NODES = default_nodes
+
+print(f"📡 [Coordinator] Active Compute Cluster Targets: {COMPUTE_NODES}")
 
 
 class SearchQuery(BaseModel):
