@@ -1,0 +1,36 @@
+services:
+  coordinator:
+    container_name: ares_coordinator
+    build: .
+    command: ["uvicorn", "coordinator:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "9000:9000"
+    depends_on:
+      - compute_1
+      - compute_2
+
+  compute_1:
+    container_name: ares_compute_01
+    build: .
+    command: ["uvicorn", "compute_node:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    volumes:
+      - ./data/node_1:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  compute_2:
+    container_name: ares_compute_02
+    build: .
+    command: ["uvicorn", "compute_node:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    volumes:
+      - ./data/node_2:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
