@@ -9,4 +9,6 @@ data/
 *.npy
 .idea/
 .vscode/
-EOF
+*.iml
+.data/
+*.json
