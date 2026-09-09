@@ -28,4 +28,30 @@ jobs:
 
       - name: Run Mathematical Invariant Tests
         run: |
-          pytest tests/ -v
+          pytest tests/test_math.py -v
+
+  build-containers:
+    needs: test-invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Coordinator Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.coordinator
+          push: false
+          tags: ares-coordinator:test
+
+      - name: Build Compute Node Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ares-compute:test
