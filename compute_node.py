@@ -1,109 +1,103 @@
-import numpy as np
-import json
 import os
+import numpy as np
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
-import warnings
-import uvicorn
-from dotenv import load_dotenv
 
-warnings.filterwarnings("ignore")
+SNAPSHOT_DIR = os.getenv("PERSISTENCE_DIR", "/data")
+SNAPSHOT_FILE = os.path.join(SNAPSHOT_DIR, "shard_index.npz")
 
-load_dotenv()
-HF_TOKEN = os.getenv("HF_TOKEN")
-
-app = FastAPI(title="Ares Compute Node", description="Persistent Vector Search Node")
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-# Define where the physical files will live
-DATA_DIR = "./data"
-os.makedirs(DATA_DIR, exist_ok=True)
-CORPUS_FILE = f"{DATA_DIR}/corpus.json"
-EMBEDDINGS_FILE = f"{DATA_DIR}/embeddings.npy"
+documents = []
+embeddings = None
+model = None
 
 
-# --- STORAGE LOGIC ---
-def load_index():
-    if os.path.exists(CORPUS_FILE) and os.path.exists(EMBEDDINGS_FILE):
-        print("Loading existing Vector Index from disk...")
-        with open(CORPUS_FILE, 'r') as f:
-            corpus = json.load(f)
-        corpus_embeddings = np.load(EMBEDDINGS_FILE)
+def persist_snapshot():
+    """Atomically writes memory index to disk using a temporary swap file."""
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    temp_file = f"{SNAPSHOT_FILE}.tmp.npz"
+
+    # Save both text records and normalized float32 embedding matrix
+    np.savez_compressed(
+        temp_file,
+        documents=np.array(documents, dtype=object),
+        embeddings=embeddings if embeddings is not None else np.empty((0, 384), dtype=np.float32)
+    )
+    os.replace(temp_file, SNAPSHOT_FILE)
+
+
+def load_snapshot():
+    """Restores documents and embeddings from disk on pod startup."""
+    global documents, embeddings
+    if os.path.exists(SNAPSHOT_FILE):
+        data = np.load(SNAPSHOT_FILE, allow_pickle=True)
+        documents = data["documents"].tolist()
+        embeddings = data["embeddings"]
+        print(f"📦 [Hydration] Restored {len(documents)} vectors from {SNAPSHOT_FILE}", flush=True)
     else:
-        print("⚠️ No index found. Creating default index...")
-        corpus = [
-            "A fast, dark-colored canine leaps above a sleepy hound.",
-            "Cloud computing allows scalable infrastructure deployment.",
-            "The Apollo 11 mission landed humans on the moon in 1969."
-        ]
-        corpus_embeddings = model.encode(corpus)
-        save_index(corpus, corpus_embeddings)
-
-    norms = np.linalg.norm(corpus_embeddings, axis=1)
-    return corpus, corpus_embeddings, norms
+        print(f"ℹ️ [Hydration] No snapshot found at {SNAPSHOT_FILE}. Starting cold shard.", flush=True)
 
 
-def save_index(corpus, embeddings):
-    print("💾 Saving updated Vector Index to disk...")
-    with open(CORPUS_FILE, 'w') as f:
-        json.dump(corpus, f)
-    np.save(EMBEDDINGS_FILE, embeddings)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global model
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    load_snapshot()
+    yield
 
 
-# Boot Sequence
-print("Booting Ares Compute Node...")
-corpus, corpus_embeddings, corpus_norms = load_index()
+app = FastAPI(title="Ares Compute Node", lifespan=lifespan)
 
 
-# --- NETWORK PAYLOADS ---
-class SearchQuery(BaseModel):
+class IngestRequest(BaseModel):
+    documents: list[str]
+
+
+class SearchRequest(BaseModel):
     text: str
     top_k: int = 3
 
 
-class IngestPayload(BaseModel):
-    documents: list[str]
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy",
+        "documents_indexed": len(documents),
+        "snapshot_exists": os.path.exists(SNAPSHOT_FILE)
+    }
 
 
-# --- ENDPOINTS ---
 @app.post("/ingest")
-async def ingest_data(payload: IngestPayload):
-    global corpus, corpus_embeddings, corpus_norms
-
+def ingest(payload: IngestRequest):
+    global documents, embeddings
     if not payload.documents:
-        raise HTTPException(status_code=400, detail="No documents provided.")
+        raise HTTPException(status_code=400, detail="Empty document payload.")
 
-    print(f" Ingesting {len(payload.documents)} new documents...")
-    new_embeddings = model.encode(payload.documents)
+    new_vectors = model.encode(payload.documents, normalize_embeddings=True)
 
-    # Update memory
-    corpus_embeddings = np.vstack([corpus_embeddings, new_embeddings])
-    corpus.extend(payload.documents)
-    corpus_norms = np.linalg.norm(corpus_embeddings, axis=1)
+    if embeddings is None or len(embeddings) == 0:
+        embeddings = new_vectors
+    else:
+        embeddings = np.vstack([embeddings, new_vectors])
 
-    # Save to disk!
-    save_index(corpus, corpus_embeddings)
+    documents.extend(payload.documents)
+    persist_snapshot()
 
-    return {"message": "Ingestion successful.", "total_index_size": len(corpus)}
+    return {"status": "ok", "indexed_count": len(payload.documents), "total_count": len(documents)}
 
 
 @app.post("/search")
-async def search(query: SearchQuery):
-    query_embedding = model.encode(query.text)
-    query_norm = np.linalg.norm(query_embedding)
-
-    if query_norm == 0:
+def search(payload: SearchRequest):
+    if embeddings is None or len(documents) == 0:
         return {"results": []}
 
-    dot_products = np.dot(corpus_embeddings, query_embedding)
-    similarities = dot_products / (query_norm * corpus_norms)
-    top_k_indices = np.argsort(similarities)[::-1][:query.top_k]
+    query_vec = model.encode(payload.text, normalize_embeddings=True)
+    scores = np.dot(embeddings, query_vec)
 
-    results = [{"rank": i + 1, "score": float(similarities[idx]), "document": corpus[idx]} for i, idx in
-               enumerate(top_k_indices)]
-    return {"query": query.text, "results": results}
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    top_indices = np.argsort(scores)[::-1][:payload.top_k]
+    results = [
+        {"document": documents[idx], "score": float(scores[idx])}
+        for idx in top_indices
+    ]
+    return {"results": results}

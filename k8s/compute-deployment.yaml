@@ -3,10 +3,8 @@ kind: Deployment
 metadata:
   name: ares-compute
   namespace: ares
-  labels:
-    app: ares-compute
 spec:
-  replicas: 2
+  replicas: 4
   selector:
     matchLabels:
       app: ares-compute
@@ -16,24 +14,22 @@ spec:
         app: ares-compute
     spec:
       containers:
-        - name: compute-engine
-          image: ares-ares_compute_node:latest
+        - name: compute-worker
+          image: ares-compute:latest
           imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "compute_node:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - containerPort: 8000
-          envFrom:
-            - secretRef:
-                name: ares-secrets
           resources:
             requests:
-              memory: "512Mi"
               cpu: "250m"
+              memory: "512Mi"
             limits:
-              memory: "1536Mi"
               cpu: "1000m"
-          readinessProbe:
-            httpGet:
-              path: /docs
-              port: 8000
-            initialDelaySeconds: 15
-            periodSeconds: 5
+              memory: "1536Mi"
+          volumeMounts:
+            - name: shard-storage
+              mountPath: /data
+      volumes:
+        - name: shard-storage
+          emptyDir: {}
