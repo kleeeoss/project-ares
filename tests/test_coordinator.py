@@ -108,3 +108,78 @@ async def test_distributed_ingest_batched():
         # Verify round-robin bucketing: doc1 and doc3 to node1, doc2 and doc4 to node2
         assert posted_payloads['http://node1:8000/ingest'] == ['doc1', 'doc3']
         assert posted_payloads['http://node2:8000/ingest'] == ['doc2', 'doc4']
+
+
+@pytest.mark.asyncio
+async def test_distributed_ingest_all_shards_http_error_raises_503():
+    """
+    Verifies that when compute shards return HTTP error codes (e.g. 500),
+    the coordinator recognizes them as failures and raises HTTP 503 instead of 200.
+    """
+    coordinator._DNS_CACHE = {'nodes': ['http://node1:8000', 'http://node2:8000'], 'expiry': time.time() + 100}
+
+    async def mock_post_http_500(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Shard Error"
+        return mock_resp
+
+    with patch('httpx.AsyncClient.post', side_effect=mock_post_http_500):
+        docs = ['doc1', 'doc2']
+        payload = coordinator.IngestPayload(documents=docs)
+        with pytest.raises(HTTPException) as exc_info:
+            await coordinator.distributed_ingest(payload)
+        assert exc_info.value.status_code == 503
+        assert 'All compute shards failed during ingestion' in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_distributed_ingest_partial_shards_http_error():
+    """
+    Verifies that when 1 shard succeeds (200) and 1 shard fails with HTTP 500,
+    the coordinator returns partial status with details.
+    """
+    coordinator._DNS_CACHE = {'nodes': ['http://node1:8000', 'http://node2:8000'], 'expiry': time.time() + 100}
+
+    async def mock_post_mixed(url, **kwargs):
+        mock_resp = MagicMock()
+        if 'node1' in url:
+            mock_resp.status_code = 200
+        else:
+            mock_resp.status_code = 500
+            mock_resp.text = "Disk full on shard"
+        return mock_resp
+
+    with patch('httpx.AsyncClient.post', side_effect=mock_post_mixed):
+        docs = ['doc1', 'doc2']
+        payload = coordinator.IngestPayload(documents=docs)
+        resp = await coordinator.distributed_ingest(payload)
+        assert resp['documents_routed'] == 2
+        assert len(resp['details']) == 2
+        assert any(d['status'] == 200 for d in resp['details'])
+        assert any(d['status'] == 500 for d in resp['details'])
+
+
+@pytest.mark.asyncio
+async def test_distributed_search_missing_score_key_handled_safely():
+    """
+    Verifies that search results missing a 'score' key default to 0.0 without crashing.
+    """
+    coordinator._DNS_CACHE = {'nodes': ['http://node1:8000'], 'expiry': time.time() + 100}
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        'results': [
+            {'document': 'Doc Without Score'}
+        ]
+    }
+
+    async def mock_post(url, **kwargs):
+        return mock_resp
+
+    with patch('httpx.AsyncClient.post', side_effect=mock_post):
+        query = coordinator.SearchQuery(text='test', top_k=1)
+        response = await coordinator.distributed_search(query)
+        assert len(response['results']) == 1
+        assert response['results'][0]['document'] == 'Doc Without Score'

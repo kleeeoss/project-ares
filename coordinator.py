@@ -89,10 +89,12 @@ async def distributed_ingest(payload: IngestPayload):
     results = []
     failed_batches = 0
     for (node, docs), resp in zip(active_targets, responses):
-        if isinstance(resp, Exception):
+        if isinstance(resp, Exception) or resp.status_code >= 400:
             failed_batches += 1
-            results.append({"node": node, "count": len(docs), "status": 500, "error": str(resp)})
-            print(f"⚠️ [Coordinator] Ingest failed on '{node}': {resp}")
+            err_msg = str(resp) if isinstance(resp, Exception) else f"HTTP {resp.status_code}: {resp.text}"
+            status_val = 500 if isinstance(resp, Exception) else resp.status_code
+            results.append({"node": node, "count": len(docs), "status": status_val, "error": err_msg})
+            print(f"⚠️ [Coordinator] Ingest failed on '{node}': {err_msg}")
         else:
             results.append({"node": node, "count": len(docs), "status": resp.status_code})
 
@@ -150,7 +152,7 @@ async def distributed_search(query: SearchQuery):
         )
 
     # REDUCE: Sort mathematically by Cosine Similarity score descending
-    sorted_results = sorted(all_results, key=lambda x: x["score"], reverse=True)
+    sorted_results = sorted(all_results, key=lambda x: x.get("score", 0.0), reverse=True)
     final_top_k = sorted_results[:query.top_k]
 
     for i, result in enumerate(final_top_k):
