@@ -25,6 +25,8 @@ spec:
           env:
             - name: COMPUTE_NODES
               value: '["http://compute-service:8000"]'
+            - name: COMPUTE_HEADLESS_HOST
+              value: "compute-headless.ares.svc.cluster.local"
           envFrom:
             - secretRef:
                 name: ares-secrets

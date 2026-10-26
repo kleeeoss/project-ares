@@ -21,7 +21,7 @@ services:
     image: ares-compute:latest
     container_name: ares_compute_01
     volumes:
-      - ./data/node_1:/app/data
+      - ./data/node_1:/data
     env_file:
       - .env
     networks:
@@ -31,7 +31,7 @@ services:
     image: ares-compute:latest
     container_name: ares_compute_02
     volumes:
-      - ./data/node_2:/app/data
+      - ./data/node_2:/data
     env_file:
       - .env
     networks:
