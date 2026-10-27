@@ -8,8 +8,12 @@ from pydantic import BaseModel
 import uvicorn
 import os
 import json
+from typing import Optional, List
+from google import genai
+from google.genai import types
+from genai_client import get_vertex_client
 
-app = FastAPI(title="Ares Coordinator Node", description="Distributed Scatter-Gather Router")
+app = FastAPI(title="Ares Coordinator Node", description="Distributed Scatter-Gather Router with HyDE")
 
 COMPUTE_NODES = ["http://compute_1:8000", "http://compute_2:8000"]
 nodes_env = os.getenv("COMPUTE_NODES")
@@ -52,10 +56,54 @@ async def get_active_compute_nodes() -> list[str]:
 class SearchQuery(BaseModel):
     text: str
     top_k: int = 3
+    use_hyde: bool = False
 
 
 class IngestPayload(BaseModel):
     documents: list[str]
+
+
+async def expand_query_hyde(
+    query_text: str,
+    client: Optional[genai.Client] = None,
+    timeout: float = 5.0
+) -> str:
+    """
+    Expands a search query using Hypothetical Document Embeddings (HyDE) via Vertex AI.
+    Falls back gracefully to the raw query text on any error or timeout.
+    Isolated strictly to the coordinator ingress layer (compute shards remain untouched).
+    """
+    if not query_text or not query_text.strip():
+        return query_text
+
+    try:
+        genai_client = client or get_vertex_client()
+        if genai_client is None:
+            return query_text
+
+        prompt = (
+            f"Please write a short, informative hypothetical passage answering the following search query. "
+            f"Write only the passage without preamble or meta-commentary:\n\n{query_text}"
+        )
+        config = types.GenerateContentConfig(
+            temperature=0.2,
+            thinking_config=types.ThinkingConfig(thinking_budget=0)
+        )
+        model_id = os.getenv("GEMINI_MODEL_ID", "gemini-3.5-flash-lite")
+
+        resp = await asyncio.wait_for(
+            genai_client.aio.models.generate_content(
+                model=model_id,
+                contents=prompt,
+                config=config
+            ),
+            timeout=timeout
+        )
+        text = resp.text.strip() if resp and resp.text else ""
+        return text if text else query_text
+    except Exception as e:
+        print(f"⚠️ [HyDE] Query expansion failed or timed out: {e}. Falling back to raw query.")
+        return query_text
 
 
 # 🆕 THE BATCHED SHARDING ROUTER
@@ -108,7 +156,7 @@ async def distributed_ingest(payload: IngestPayload):
     }
 
 
-# THE RESILIENT SCATTER-GATHER SEARCH
+# THE RESILIENT SCATTER-GATHER SEARCH (WITH COORDINATOR HYDE)
 @app.post("/search")
 async def distributed_search(query: SearchQuery):
     print(f"🌐 [Coordinator] Received query: '{query.text}'. Scattering to cluster...")
@@ -116,9 +164,18 @@ async def distributed_search(query: SearchQuery):
     if not nodes:
         raise HTTPException(status_code=503, detail="No active compute nodes available")
 
+    search_text = query.text
+    hyde_applied = False
+    if query.use_hyde:
+        expanded = await expand_query_hyde(query.text)
+        if expanded and expanded != query.text:
+            print(f"✨ [HyDE] Query expanded: '{query.text}' -> '{expanded[:60]}...'")
+            search_text = expanded
+            hyde_applied = True
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         tasks = [
-            client.post(f"{node}/search", json={"text": query.text, "top_k": query.top_k})
+            client.post(f"{node}/search", json={"text": search_text, "top_k": query.top_k})
             for node in nodes
         ]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -161,6 +218,8 @@ async def distributed_search(query: SearchQuery):
     print(f"✅ [Coordinator] Gathered {len(all_results)} vectors from {successful_nodes}/{len(nodes)} shards. Returning Top {len(final_top_k)}.")
     return {
         "query": query.text,
+        "search_text": search_text,
+        "hyde_applied": hyde_applied,
         "results": final_top_k,
         "cluster_health": {
             "total_shards": len(nodes),
